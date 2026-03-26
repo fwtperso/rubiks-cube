@@ -87,15 +87,17 @@ export class ThreeRenderer implements IRenderer {
   private rafId = 0;
 
   init(container: HTMLElement): void {
+    const w = container.clientWidth || window.innerWidth;
+    const h = container.clientHeight || window.innerHeight;
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
-    this.renderer.setSize(container.clientWidth, container.clientHeight);
+    this.renderer.setSize(w, h);
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x1e1e2e);
 
-    this.camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
+    this.camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 100);
     this.camera.position.set(4, 3.5, 5);
     this.camera.lookAt(0, 0, 0);
 
