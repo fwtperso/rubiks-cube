@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { CubeState, Move } from './types';
 import { Face, Color } from './types';
 import type { IRenderer } from './Renderer';
@@ -92,7 +92,7 @@ export class ThreeRenderer implements IRenderer {
   private renderer!: THREE.WebGLRenderer;
   private scene!: THREE.Scene;
   private camera!: THREE.PerspectiveCamera;
-  private controls!: TrackballControls;
+  private controls!: OrbitControls;
   private cubeMeshes: THREE.Mesh[] = [];
   private animating = false;
   private renderRafId = 0;
@@ -118,13 +118,18 @@ export class ThreeRenderer implements IRenderer {
     directional.position.set(5, 8, 5);
     this.scene.add(ambient, directional);
 
-    this.controls = new TrackballControls(this.camera, this.renderer.domElement);
-    this.controls.rotateSpeed = 3.0;
-    this.controls.zoomSpeed = 1.2;
-    this.controls.panSpeed = 0.0;   // no pan — only rotate and zoom
-    this.controls.noPan = true;
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.08;
+    this.controls.enablePan = false;
     this.controls.minDistance = 3;
     this.controls.maxDistance = 12;
+    // 1 finger = face rotation (handled by gesture system below)
+    // 2 fingers = pinch-zoom + orbit
+    this.controls.touches = {
+      ONE:  null,
+      TWO:  THREE.TOUCH.DOLLY_ROTATE,
+    };
 
     window.addEventListener('resize', () => this.onResize(container));
 
@@ -135,103 +140,99 @@ export class ThreeRenderer implements IRenderer {
     return this.animating;
   }
 
-  // Call after init(). Swipe on a face rotates that layer; drag elsewhere orbits.
-  // Intent is decided in touchmove/mousemove after a movement threshold so that
-  // slow drags on the cube still orbit (TrackballControls handles them).
+  // Gesture system:
+  //   Mobile — 1 finger: face rotation   2 fingers: orbit + pinch-zoom (OrbitControls)
+  //   Desktop — left drag on face: face rotation   left drag on bg: orbit
   setupGestures(onMove: (move: Move) => void): void {
     const canvas = this.renderer.domElement;
     const raycaster = new THREE.Raycaster();
-    const FACE_ROTATE_THRESHOLD = 12; // px before committing to face rotation
+    const THRESHOLD = 14; // px of movement before committing to face rotation
 
-    let dragStart: { x: number; y: number } | null = null;
+    let start: { x: number; y: number } | null = null;
     let hitMesh: THREE.Mesh | null = null;
     let hitNormal: THREE.Vector3 | null = null;
-    let intent: 'undecided' | 'face' | 'orbit' = 'undecided';
+    let committed = false;
 
-    const ndc = (clientX: number, clientY: number): THREE.Vector2 => {
+    const ndc = (x: number, y: number) => {
       const r = canvas.getBoundingClientRect();
-      return new THREE.Vector2(
-        ((clientX - r.left) / r.width) * 2 - 1,
-        -((clientY - r.top) / r.height) * 2 + 1,
-      );
+      return new THREE.Vector2(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
     };
 
-    const raycast = (clientX: number, clientY: number) => {
-      raycaster.setFromCamera(ndc(clientX, clientY), this.camera);
+    const raycast = (x: number, y: number) => {
+      raycaster.setFromCamera(ndc(x, y), this.camera);
       const hits = raycaster.intersectObjects(this.cubeMeshes);
       if (!hits.length || !hits[0].face) return null;
       const n = hits[0].face.normal.clone().transformDirection(hits[0].object.matrixWorld);
       const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
-      if (ax > ay && ax > az)      n.set(Math.sign(n.x), 0, 0);
-      else if (ay > az)            n.set(0, Math.sign(n.y), 0);
-      else                         n.set(0, 0, Math.sign(n.z));
+      if (ax > ay && ax > az) n.set(Math.sign(n.x), 0, 0);
+      else if (ay > az)       n.set(0, Math.sign(n.y), 0);
+      else                    n.set(0, 0, Math.sign(n.z));
       return { mesh: hits[0].object as THREE.Mesh, normal: n };
     };
 
-    const reset = () => {
-      dragStart = null; hitMesh = null; hitNormal = null; intent = 'undecided';
+    const tryCommit = (dx: number, dy: number): boolean => {
+      if (committed) return true;
+      if (Math.hypot(dx, dy) >= THRESHOLD) { committed = true; }
+      return committed;
+    };
+
+    const finish = (endX: number, endY: number) => {
+      if (committed && start && hitMesh && hitNormal) {
+        const move = this.computeMove(hitNormal, hitMesh, endX - start.x, endY - start.y);
+        if (move) onMove(move);
+      }
+      start = null; hitMesh = null; hitNormal = null; committed = false;
       this.controls.enabled = true;
     };
 
-    // ── Mouse ────────────────────────────────────────────────────────────────
-    canvas.addEventListener('mousedown', e => {
-      dragStart = { x: e.clientX, y: e.clientY };
-      const hit = raycast(e.clientX, e.clientY);
-      if (hit) { hitMesh = hit.mesh; hitNormal = hit.normal; }
-      intent = 'undecided';
-    });
-
-    window.addEventListener('mousemove', e => {
-      if (intent !== 'undecided' || !dragStart || !hitMesh) return;
-      const d = Math.hypot(e.clientX - dragStart.x, e.clientY - dragStart.y);
-      if (d < FACE_ROTATE_THRESHOLD) return;
-      // Enough movement — commit to face rotation, block orbit
-      intent = 'face';
-      this.controls.enabled = false;
-    });
-
-    window.addEventListener('mouseup', e => {
-      if (intent === 'face' && dragStart && hitMesh && hitNormal) {
-        const move = this.computeMove(
-          hitNormal, hitMesh,
-          e.clientX - dragStart.x, e.clientY - dragStart.y,
-        );
-        if (move) onMove(move);
-      }
-      reset();
-    });
-
     // ── Touch ────────────────────────────────────────────────────────────────
+    // 1 finger: our gesture system handles face rotation
+    // 2+ fingers: pass straight through to OrbitControls (touches.TWO = DOLLY_ROTATE)
     canvas.addEventListener('touchstart', e => {
-      if (e.touches.length !== 1) { reset(); return; }
+      if (e.touches.length > 1) { finish(0, 0); return; } // abort; let 2-finger orbit start
       const t = e.touches[0];
-      dragStart = { x: t.clientX, y: t.clientY };
+      start = { x: t.clientX, y: t.clientY };
       const hit = raycast(t.clientX, t.clientY);
       if (hit) { hitMesh = hit.mesh; hitNormal = hit.normal; }
-      intent = 'undecided';
+      committed = false;
     }, { passive: true });
 
     canvas.addEventListener('touchmove', e => {
-      if (intent !== 'undecided' || !dragStart || !hitMesh) return;
+      if (e.touches.length > 1 || !start || !hitMesh) return;
       const t = e.touches[0];
-      const d = Math.hypot(t.clientX - dragStart.x, t.clientY - dragStart.y);
-      if (d < FACE_ROTATE_THRESHOLD) return;
-      intent = 'face';
-      e.preventDefault(); // stop scroll AND interrupt TrackballControls
-      this.controls.enabled = false;
+      if (tryCommit(t.clientX - start.x, t.clientY - start.y)) {
+        e.preventDefault();            // suppress scroll; OrbitControls ignores 1-finger anyway
+        this.controls.enabled = false; // belt-and-suspenders
+      }
     }, { passive: false });
 
     canvas.addEventListener('touchend', e => {
-      if (intent === 'face' && dragStart && hitMesh && hitNormal) {
-        const t = e.changedTouches[0];
-        const move = this.computeMove(
-          hitNormal, hitMesh,
-          t.clientX - dragStart.x, t.clientY - dragStart.y,
-        );
-        if (move) onMove(move);
-      }
-      reset();
+      const t = e.changedTouches[0];
+      finish(t.clientX, t.clientY);
     }, { passive: true });
+
+    // ── Mouse ────────────────────────────────────────────────────────────────
+    // Left-drag on cube face = face rotation; left-drag on background = orbit (OrbitControls)
+    canvas.addEventListener('mousedown', e => {
+      if (e.button !== 0) return;
+      start = { x: e.clientX, y: e.clientY };
+      const hit = raycast(e.clientX, e.clientY);
+      if (hit) {
+        hitMesh = hit.mesh; hitNormal = hit.normal;
+        this.controls.enabled = false; // block orbit until we know intent
+      }
+      committed = false;
+    });
+
+    window.addEventListener('mousemove', e => {
+      if (!start || !hitMesh) return;
+      if (tryCommit(e.clientX - start.x, e.clientY - start.y)) return; // face rotation in progress
+      // Below threshold and still on face — keep controls disabled until mouseup
+    });
+
+    window.addEventListener('mouseup', e => {
+      if (e.button === 0) finish(e.clientX, e.clientY);
+    });
   }
 
   render(state: CubeState): void {
