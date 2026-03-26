@@ -49,7 +49,14 @@ btn.addEventListener('click', () => {
   playNext();
 });
 
-// Demo: keyboard shortcuts for manual moves (useful for testing)
+// Swipe gestures — touch a face and drag to rotate that layer
+renderer.setupGestures(move => {
+  if (renderer.isAnimating()) return;
+  cube.applyMove(move);
+  renderer.animateMove(move, () => renderer.render(cube.getState()));
+});
+
+// Keyboard shortcuts for manual moves (useful for testing)
 const KEY_MOVES: Record<string, { face: Face; direction: 1 | -1 }> = {
   u: { face: Face.UP,    direction:  1 },
   U: { face: Face.UP,    direction: -1 },
