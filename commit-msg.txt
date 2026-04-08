@@ -1,7 +1,0 @@
-feat(scaffold): init Vite + TypeScript + Three.js project
-
-- Vite + TypeScript (strict) + Three.js with passing build
-- Vitest configured for unit tests
-- src/cube, src/gestures, src/ui module directories
-- TypeScript interfaces: ICubeLogic, IRenderer, IGestureHandler, types.ts
-- Minimal Three.js hello-world scene in main.ts
